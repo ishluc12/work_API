@@ -8,6 +8,12 @@ const bcrypt = require('bcryptjs');
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Log environment variables to ensure they are being loaded
+console.log("Database Host:", process.env.DB_HOST);
+console.log("Database User:", process.env.DB_USER);
+console.log("Database Name:", process.env.DB_DATABASE);
+console.log("Database Password:", process.env.DB_PASSWORD);
+
 // Middleware
 app.use(bodyParser.json());
 
@@ -18,6 +24,7 @@ const pool = new Pool({
   database: process.env.DB_DATABASE,
   password: process.env.DB_PASSWORD,
   port: parseInt(process.env.DB_PORT) || 5432,
+  ssl: { rejectUnauthorized: false } // Render free tier
 });
 
 // JWT utilities
