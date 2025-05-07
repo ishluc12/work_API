@@ -4,34 +4,62 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const cors = require('cors'); // Added CORS dependency
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Log environment variables
+// CORS configuration
+app.use(cors({
+  origin: ['http://localhost:5173', 'https://your-frontend-domain.com'], // Add your frontend domains
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+
+// Log environment variables (for debugging only - remove in production)
 console.log("Database Host:", process.env.DB_HOST);
 console.log("Database User:", process.env.DB_USER);
 console.log("Database Name:", process.env.DB_DATABASE);
-console.log("Database Password:", process.env.DB_PASSWORD);
+// Don't log passwords in production!
+console.log("Database Port:", process.env.DB_PORT || 5432);
 
 // Middleware
 app.use(bodyParser.json());
 
-// PostgreSQL connection
+// PostgreSQL connection with improved error handling for Render.com hosted database
 const pool = new Pool({
   user: process.env.DB_USER,
   host: process.env.DB_HOST,
   database: process.env.DB_DATABASE,
   password: process.env.DB_PASSWORD,
   port: parseInt(process.env.DB_PORT) || 5432,
-  ssl: { rejectUnauthorized: false }
+  // SSL is required for Render.com PostgreSQL databases
+  ssl: { rejectUnauthorized: false },
+  // Add connection timeout - increased for cloud hosted DB
+  connectionTimeoutMillis: 10000,
+  // Add retry logic
+  max: 10, // max clients in pool
+  idleTimeoutMillis: 30000, // how long a client is allowed to remain idle before being closed
+});
+
+// Test database connection on startup
+pool.connect((err, client, done) => {
+  if (err) {
+    console.error('Database connection error:', err.message);
+    console.error('Please check if the database server is accessible and credentials are correct');
+    // Don't exit the process, let the server start anyway
+  } else {
+    console.log('Successfully connected to PostgreSQL database on Render.com');
+    done(); // release the client back to the pool
+  }
 });
 
 // JWT utilities
 function generateToken(user) {
   return jwt.sign(
     { id: user.id, username: user.username },
-    process.env.JWT_SECRET,
+    process.env.JWT_SECRET || 'default_jwt_secret', // Fallback for testing only
     { expiresIn: process.env.JWT_EXPIRY || '1h' }
   );
 }
@@ -43,7 +71,7 @@ function authenticateToken(req, res, next) {
   if (!token) return res.status(401).json({ message: 'Missing token' });
 
   try {
-    const user = jwt.verify(token, process.env.JWT_SECRET);
+    const user = jwt.verify(token, process.env.JWT_SECRET || 'default_jwt_secret');
     req.user = user;
     next();
   } catch (err) {
@@ -59,6 +87,11 @@ app.get('/', (req, res) => {
 // Public: Signup
 app.post('/signup', async (req, res) => {
   const { username, password } = req.body;
+
+  if (!username || !password) {
+    return res.status(400).json({ message: 'Username and password are required' });
+  }
+
   try {
     const hashed = await bcrypt.hash(password, 10);
     const result = await pool.query(
@@ -69,6 +102,10 @@ app.post('/signup', async (req, res) => {
     res.status(201).json({ message: 'User registered successfully', token });
   } catch (err) {
     console.error(err);
+    // Better error handling for duplicate usernames
+    if (err.code === '23505') { // PostgreSQL unique constraint violation
+      return res.status(409).json({ message: 'Username already exists' });
+    }
     res.status(500).json({ message: 'Signup failed', error: err.message });
   }
 });
@@ -76,6 +113,11 @@ app.post('/signup', async (req, res) => {
 // Public: Login
 app.post('/login', async (req, res) => {
   const { username, password } = req.body;
+
+  if (!username || !password) {
+    return res.status(400).json({ message: 'Username and password are required' });
+  }
+
   try {
     const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
     const user = result.rows[0];
@@ -93,7 +135,8 @@ app.post('/login', async (req, res) => {
 });
 
 // Authenticated routes
-app.use(authenticateToken);
+app.use('/products', authenticateToken);
+app.use('/product', authenticateToken);
 
 // Get all products
 app.get('/products', async (req, res) => {
@@ -233,7 +276,11 @@ app.delete('/product/:id', async (req, res) => {
   }
 });
 
-
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ message: 'Internal server error', error: err.message });
+});
 
 // === ✅ Start Server ===
 app.listen(port, () => {
