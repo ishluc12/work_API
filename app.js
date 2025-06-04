@@ -10,11 +10,16 @@ const port = process.env.PORT || 3000;
 
 // CORS configuration
 app.use(cors({
-  origin: ['http://localhost:5173', 'https://your-frontend-domain.com'],
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:7293', // 👈 Add this for Flutter web
+    'https://your-frontend-domain.com'
+  ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
+
 
 // Import database utilities
 const { pool, getConnection, isInitialized } = require('./db.js');
@@ -31,7 +36,7 @@ app.use((req, res, next) => {
 // Database availability middleware
 const checkDatabaseAvailability = (req, res, next) => {
   if (!isInitialized()) {
-    return res.status(503).json({ 
+    return res.status(503).json({
       message: 'Database is currently unavailable. Please try again later.',
       status: 'service_unavailable'
     });
@@ -69,9 +74,9 @@ app.get('/health', async (req, res) => {
     const client = await getConnection();
     const result = await client.query('SELECT NOW() as current_time, version() as pg_version');
     client.release();
-    
-    res.json({ 
-      status: 'healthy', 
+
+    res.json({
+      status: 'healthy',
       database: 'connected',
       timestamp: new Date().toISOString(),
       server_time: result.rows[0].current_time,
@@ -79,8 +84,8 @@ app.get('/health', async (req, res) => {
     });
   } catch (err) {
     console.error('Health check failed:', err);
-    res.status(500).json({ 
-      status: 'unhealthy', 
+    res.status(500).json({
+      status: 'unhealthy',
       database: 'disconnected',
       error: err.message,
       timestamp: new Date().toISOString()
@@ -90,7 +95,7 @@ app.get('/health', async (req, res) => {
 
 // Welcome route
 app.get('/', (req, res) => {
-  res.json({ 
+  res.json({
     message: 'Welcome to the API. Please register or log in to continue.',
     endpoints: {
       health: '/health',
@@ -123,8 +128,8 @@ app.post('/signup', checkDatabaseAvailability, async (req, res) => {
       [username, hashed]
     );
     const token = generateToken(result.rows[0]);
-    res.status(201).json({ 
-      message: 'User registered successfully', 
+    res.status(201).json({
+      message: 'User registered successfully',
       token,
       user: {
         id: result.rows[0].id,
@@ -162,8 +167,8 @@ app.post('/login', checkDatabaseAvailability, async (req, res) => {
     }
 
     const token = generateToken(user);
-    res.json({ 
-      message: 'Login successful', 
+    res.json({
+      message: 'Login successful',
       token,
       user: {
         id: user.id,
@@ -256,22 +261,22 @@ app.post('/products', authenticateToken, checkDatabaseAvailability, async (req, 
   try {
     client = await getConnection();
     await client.query('BEGIN');
-    
+
     const results = [];
     for (const product of productsToCreate) {
       const { product_name, description, quantity, price } = product;
-      
+
       if (!product_name || quantity === undefined || price === undefined) {
         throw new Error('Missing required fields: product_name, quantity, price');
       }
-      
+
       const result = await client.query(
         'INSERT INTO product (product_name, description, quantity, price) VALUES ($1, $2, $3, $4) RETURNING *',
         [product_name, description || '', quantity, price]
       );
       results.push(result.rows[0]);
     }
-    
+
     await client.query('COMMIT');
     res.status(201).json(results);
   } catch (err) {
