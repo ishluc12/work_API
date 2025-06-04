@@ -11,22 +11,23 @@ const port = process.env.PORT || 3000;
 // Import database utilities
 const { pool, getConnection, isInitialized } = require('./db.js');
 
-// Streamlined CORS configuration
+// Fixed CORS configuration
 const corsOptions = {
   origin: (origin, callback) => {
     console.log('CORS Origin:', origin);
 
-    // Allow requests with no origin
+    // Allow requests with no origin (mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
 
-    // Development: Allow all localhost/127.0.0.1 origins
+    // Development: Allow all localhost and 127.0.0.1 origins with any port
     if (process.env.NODE_ENV !== 'production') {
-      if (origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/)) {
+      if (origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/) ||
+        origin.match(/^https?:\/\/.*\.localhost(:\d+)?$/)) {
         return callback(null, true);
       }
     }
 
-    // Production origins
+    // Production origins - update these with your actual domains
     const productionOrigins = [
       'https://your-frontend-domain.com',
       'https://your-flutter-web-domain.com'
@@ -35,18 +36,32 @@ const corsOptions = {
     if (process.env.NODE_ENV === 'production') {
       callback(null, productionOrigins.includes(origin));
     } else {
-      // Development: Allow all origins
+      // Development: Allow all origins as fallback
       callback(null, true);
     }
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
+  allowedHeaders: [
+    'Origin',
+    'X-Requested-With',
+    'Content-Type',
+    'Accept',
+    'Authorization',
+    'Cache-Control',
+    'Pragma'
+  ],
   credentials: true,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200, // Some legacy browsers choke on 204
+  preflightContinue: false // Pass control to the next handler
 };
 
-// Apply middleware
+// Apply CORS middleware FIRST
 app.use(cors(corsOptions));
+
+// Handle preflight requests explicitly
+app.options('*', cors(corsOptions));
+
+// Apply other middleware
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -555,7 +570,7 @@ const server = app.listen(port, () => {
   console.log(`🚀 Server running at http://localhost:${port}`);
   console.log(`📊 Health check: http://localhost:${port}/health`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔒 CORS: Enabled`);
+  console.log(`🔒 CORS: Enabled for development origins`);
   console.log(`⏰ JWT Expiry: ${process.env.JWT_EXPIRY || '24h'}`);
 });
 
