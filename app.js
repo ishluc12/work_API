@@ -11,35 +11,32 @@ const port = process.env.PORT || 3000;
 // Import database utilities
 const { pool, getConnection, isInitialized } = require('./db.js');
 
-// Fixed CORS configuration
 const corsOptions = {
   origin: (origin, callback) => {
     console.log('CORS Origin:', origin);
 
-    // Allow requests with no origin (mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
 
-    // Development: Allow all localhost and 127.0.0.1 origins with any port
-    if (process.env.NODE_ENV !== 'production') {
-      if (origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/) ||
-        origin.match(/^https?:\/\/.*\.localhost(:\d+)?$/)) {
-        return callback(null, true);
-      }
-    }
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+    const isLocalSubdomain = /^https?:\/\/.*\.localhost(:\d+)?$/i.test(origin);
 
-    // Production origins - update these with your actual domains
     const productionOrigins = [
       'https://your-frontend-domain.com',
       'https://your-flutter-web-domain.com'
     ];
 
-    if (process.env.NODE_ENV === 'production') {
-      callback(null, productionOrigins.includes(origin));
-    } else {
-      // Development: Allow all origins as fallback
-      callback(null, true);
+    if (process.env.NODE_ENV !== 'production') {
+      if (isLocalhost || isLocalSubdomain) return callback(null, true);
+      return callback(null, true); // Fallback for dev
     }
+
+    if (productionOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error('Not allowed by CORS'));
   },
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: [
     'Origin',
@@ -50,9 +47,8 @@ const corsOptions = {
     'Cache-Control',
     'Pragma'
   ],
-  credentials: true,
-  optionsSuccessStatus: 200, // Some legacy browsers choke on 204
-  preflightContinue: false // Pass control to the next handler
+  optionsSuccessStatus: 200,
+  preflightContinue: false
 };
 
 // Apply CORS middleware FIRST
