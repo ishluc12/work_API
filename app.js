@@ -1,65 +1,49 @@
 require('dotenv').config();
-const { Pool } = require('pg');
 const express = require('express');
 const bodyParser = require('body-parser');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const cors = require('cors'); // Added CORS dependency
+const cors = require('cors');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
 // CORS configuration
 app.use(cors({
-  origin: ['http://localhost:5173', 'https://your-frontend-domain.com'], // Add your frontend domains
+  origin: ['http://localhost:5173', 'https://your-frontend-domain.com'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
 
-// Log environment variables (for debugging only - remove in production)
-console.log("Database Host:", process.env.DB_HOST);
-console.log("Database User:", process.env.DB_USER);
-console.log("Database Name:", process.env.DB_DATABASE);
-// Don't log passwords in production!
-console.log("Database Port:", process.env.DB_PORT || 5432);
+// Import database utilities
+const { pool, getConnection, isInitialized } = require('./db.js');
 
 // Middleware
 app.use(bodyParser.json());
 
-// PostgreSQL connection with improved error handling for Render.com hosted database
-const pool = new Pool({
-  user: process.env.DB_USER,
-  host: process.env.DB_HOST,
-  database: process.env.DB_DATABASE,
-  password: process.env.DB_PASSWORD,
-  port: parseInt(process.env.DB_PORT) || 5432,
-  // SSL is required for Render.com PostgreSQL databases
-  ssl: { rejectUnauthorized: false },
-  // Add connection timeout - increased for cloud hosted DB
-  connectionTimeoutMillis: 10000,
-  // Add retry logic
-  max: 10, // max clients in pool
-  idleTimeoutMillis: 30000, // how long a client is allowed to remain idle before being closed
+// Add request logging middleware
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
 });
 
-// Test database connection on startup
-pool.connect((err, client, done) => {
-  if (err) {
-    console.error('Database connection error:', err.message);
-    console.error('Please check if the database server is accessible and credentials are correct');
-    // Don't exit the process, let the server start anyway
-  } else {
-    console.log('Successfully connected to PostgreSQL database on Render.com');
-    done(); // release the client back to the pool
+// Database availability middleware
+const checkDatabaseAvailability = (req, res, next) => {
+  if (!isInitialized()) {
+    return res.status(503).json({ 
+      message: 'Database is currently unavailable. Please try again later.',
+      status: 'service_unavailable'
+    });
   }
-});
+  next();
+};
 
 // JWT utilities
 function generateToken(user) {
   return jwt.sign(
     { id: user.id, username: user.username },
-    process.env.JWT_SECRET || 'default_jwt_secret', // Fallback for testing only
+    process.env.JWT_SECRET || 'default_jwt_secret',
     { expiresIn: process.env.JWT_EXPIRY || '1h' }
   );
 }
@@ -79,47 +63,98 @@ function authenticateToken(req, res, next) {
   }
 }
 
+// Database health check route
+app.get('/health', async (req, res) => {
+  try {
+    const client = await getConnection();
+    const result = await client.query('SELECT NOW() as current_time, version() as pg_version');
+    client.release();
+    
+    res.json({ 
+      status: 'healthy', 
+      database: 'connected',
+      timestamp: new Date().toISOString(),
+      server_time: result.rows[0].current_time,
+      database_version: result.rows[0].pg_version.split(' ')[0] + ' ' + result.rows[0].pg_version.split(' ')[1]
+    });
+  } catch (err) {
+    console.error('Health check failed:', err);
+    res.status(500).json({ 
+      status: 'unhealthy', 
+      database: 'disconnected',
+      error: err.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // Welcome route
 app.get('/', (req, res) => {
-  res.json({ message: 'Welcome to the API. Please register or log in to continue.' });
+  res.json({ 
+    message: 'Welcome to the API. Please register or log in to continue.',
+    endpoints: {
+      health: '/health',
+      signup: 'POST /signup',
+      login: 'POST /login',
+      users: 'GET /users (requires auth)',
+      products: 'GET /products (requires auth)'
+    }
+  });
 });
 
 // Public: Signup
-app.post('/signup', async (req, res) => {
+app.post('/signup', checkDatabaseAvailability, async (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {
     return res.status(400).json({ message: 'Username and password are required' });
   }
 
+  if (password.length < 6) {
+    return res.status(400).json({ message: 'Password must be at least 6 characters long' });
+  }
+
+  let client;
   try {
+    client = await getConnection();
     const hashed = await bcrypt.hash(password, 10);
-    const result = await pool.query(
-      'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username',
+    const result = await client.query(
+      'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username, created_at',
       [username, hashed]
     );
     const token = generateToken(result.rows[0]);
-    res.status(201).json({ message: 'User registered successfully', token });
+    res.status(201).json({ 
+      message: 'User registered successfully', 
+      token,
+      user: {
+        id: result.rows[0].id,
+        username: result.rows[0].username,
+        created_at: result.rows[0].created_at
+      }
+    });
   } catch (err) {
-    console.error(err);
-    // Better error handling for duplicate usernames
-    if (err.code === '23505') { // PostgreSQL unique constraint violation
+    console.error('Signup error:', err);
+    if (err.code === '23505') {
       return res.status(409).json({ message: 'Username already exists' });
     }
     res.status(500).json({ message: 'Signup failed', error: err.message });
+  } finally {
+    if (client) client.release();
   }
 });
 
 // Public: Login
-app.post('/login', async (req, res) => {
+app.post('/login', checkDatabaseAvailability, async (req, res) => {
   const { username, password } = req.body;
 
   if (!username || !password) {
     return res.status(400).json({ message: 'Username and password are required' });
   }
 
+  let client;
   try {
-    const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+    client = await getConnection();
+    const result = await client.query('SELECT * FROM users WHERE username = $1', [username]);
     const user = result.rows[0];
 
     if (!user || !(await bcrypt.compare(password, user.password))) {
@@ -127,270 +162,124 @@ app.post('/login', async (req, res) => {
     }
 
     const token = generateToken(user);
-    res.json({ message: 'Login successful', token });
+    res.json({ 
+      message: 'Login successful', 
+      token,
+      user: {
+        id: user.id,
+        username: user.username
+      }
+    });
   } catch (err) {
-    console.error(err);
+    console.error('Login error:', err);
     res.status(500).json({ message: 'Login failed', error: err.message });
+  } finally {
+    if (client) client.release();
   }
 });
 
-app.get('/users', authenticateToken, async (req, res) => {
+// Protected routes
+app.get('/users', authenticateToken, checkDatabaseAvailability, async (req, res) => {
+  let client;
   try {
-    const result = await pool.query('SELECT id, username FROM users');
+    client = await getConnection();
+    const result = await client.query('SELECT id, username, created_at FROM users ORDER BY created_at DESC');
     res.status(200).json(result.rows);
   } catch (err) {
-    console.error(err);
+    console.error('Get users error:', err);
     res.status(500).json({ message: 'Error fetching users', error: err.message });
+  } finally {
+    if (client) client.release();
   }
 });
 
-app.get('/user/:id', authenticateToken, async (req, res) => {
+app.get('/user/:id', authenticateToken, checkDatabaseAvailability, async (req, res) => {
   const { id } = req.params;
+  let client;
   try {
-    const result = await pool.query('SELECT id, username FROM users WHERE id = $1', [id]);
+    client = await getConnection();
+    const result = await client.query('SELECT id, username, created_at FROM users WHERE id = $1', [id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'User not found' });
     }
     res.status(200).json(result.rows[0]);
   } catch (err) {
-    console.error(err);
+    console.error('Get user error:', err);
     res.status(500).json({ message: 'Error fetching user', error: err.message });
+  } finally {
+    if (client) client.release();
   }
 });
-
-app.put('/user/:id', authenticateToken, async (req, res) => {
-  const { id } = req.params;
-  const { username, password } = req.body;
-
-  if (!username || !password) {
-    return res.status(400).json({ message: 'Username and password are required' });
-  }
-
-  try {
-    const hashed = await bcrypt.hash(password, 10);
-    const result = await pool.query(
-      'UPDATE users SET username = $1, password = $2 WHERE id = $3 RETURNING id, username',
-      [username, hashed, id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    res.status(200).json(result.rows[0]);
-  } catch (err) {
-    console.error(err);
-    if (err.code === '23505') {
-      return res.status(409).json({ message: 'Username already exists' });
-    }
-    res.status(500).json({ message: 'Error updating user', error: err.message });
-  }
-});
-
-app.patch('/user/:id', authenticateToken, async (req, res) => {
-  const { id } = req.params;
-  const updates = req.body;
-
-  try {
-    const user = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
-    if (user.rows.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    const setClauses = [];
-    const values = [];
-    let i = 1;
-
-    if (updates.username) {
-      setClauses.push(`username = $${i}`);
-      values.push(updates.username);
-      i++;
-    }
-
-    if (updates.password) {
-      const hashed = await bcrypt.hash(updates.password, 10);
-      setClauses.push(`password = $${i}`);
-      values.push(hashed);
-      i++;
-    }
-
-    if (setClauses.length === 0) {
-      return res.status(400).json({ message: 'No valid fields to update' });
-    }
-
-    values.push(id);
-    const result = await pool.query(
-      `UPDATE users SET ${setClauses.join(', ')} WHERE id = $${i} RETURNING id, username`,
-      values
-    );
-
-    res.status(200).json(result.rows[0]);
-  } catch (err) {
-    console.error(err);
-    if (err.code === '23505') {
-      return res.status(409).json({ message: 'Username already exists' });
-    }
-    res.status(500).json({ message: 'Error updating user', error: err.message });
-  }
-});
-
-app.delete('/user/:id', authenticateToken, async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING id, username', [id]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    res.status(200).json({ message: 'User deleted successfully' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error deleting user', error: err.message });
-  }
-});
-
-
-// Authenticated routes
-app.use('/products', authenticateToken);
-app.use('/product', authenticateToken);
 
 // Get all products
-app.get('/products', async (req, res) => {
+app.get('/products', authenticateToken, checkDatabaseAvailability, async (req, res) => {
+  let client;
   try {
-    const result = await pool.query('SELECT * FROM product');
+    client = await getConnection();
+    const result = await client.query('SELECT * FROM product ORDER BY currentstamp DESC');
     res.status(200).json(result.rows);
   } catch (err) {
-    console.error(err);
+    console.error('Get products error:', err);
     res.status(500).json({ message: 'Error fetching products', error: err.message });
+  } finally {
+    if (client) client.release();
   }
 });
 
 // Get product by ID
-app.get('/product/:id', async (req, res) => {
+app.get('/product/:id', authenticateToken, checkDatabaseAvailability, async (req, res) => {
   const { id } = req.params;
+  let client;
   try {
-    const result = await pool.query('SELECT * FROM product WHERE product_id = $1', [id]);
+    client = await getConnection();
+    const result = await client.query('SELECT * FROM product WHERE product_id = $1', [id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'Product not found' });
     }
     res.status(200).json(result.rows[0]);
   } catch (err) {
-    console.error(err);
+    console.error('Get product error:', err);
     res.status(500).json({ message: 'Error fetching product', error: err.message });
+  } finally {
+    if (client) client.release();
   }
 });
 
-// Create new products (array input)
-app.post('/products', async (req, res) => {
+// Create new products
+app.post('/products', authenticateToken, checkDatabaseAvailability, async (req, res) => {
   const productsToCreate = req.body;
   if (!Array.isArray(productsToCreate)) {
     return res.status(400).json({ message: 'Request body must be an array of products' });
   }
 
+  let client;
   try {
+    client = await getConnection();
+    await client.query('BEGIN');
+    
     const results = [];
     for (const product of productsToCreate) {
       const { product_name, description, quantity, price } = product;
-      const result = await pool.query(
+      
+      if (!product_name || quantity === undefined || price === undefined) {
+        throw new Error('Missing required fields: product_name, quantity, price');
+      }
+      
+      const result = await client.query(
         'INSERT INTO product (product_name, description, quantity, price) VALUES ($1, $2, $3, $4) RETURNING *',
-        [product_name, description, quantity, price]
+        [product_name, description || '', quantity, price]
       );
       results.push(result.rows[0]);
     }
+    
+    await client.query('COMMIT');
     res.status(201).json(results);
   } catch (err) {
-    console.error(err);
+    if (client) await client.query('ROLLBACK');
+    console.error('Create products error:', err);
     res.status(500).json({ message: 'Error creating products', error: err.message });
-  }
-});
-
-// Update single product (PUT)
-app.put('/product/:id', async (req, res) => {
-  const { id } = req.params;
-  const { product_name, description, quantity, price } = req.body;
-
-  try {
-    const result = await pool.query(
-      'UPDATE product SET product_name = $1, description = $2, quantity = $3, price = $4, currentstamp = CURRENT_TIMESTAMP WHERE product_id = $5 RETURNING *',
-      [product_name, description, quantity, price, id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'Product not found' });
-    }
-
-    res.status(200).json(result.rows[0]);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error updating product', error: err.message });
-  }
-});
-
-// Partially update single product (PATCH)
-app.patch('/product/:id', async (req, res) => {
-  const { id } = req.params;
-  const updates = req.body;
-
-  try {
-    const product = await pool.query('SELECT * FROM product WHERE product_id = $1', [id]);
-    if (product.rows.length === 0) {
-      return res.status(404).json({ message: 'Product not found' });
-    }
-
-    const setClauses = [];
-    const values = [];
-    let valueIndex = 1;
-
-    for (const key in updates) {
-      if (updates.hasOwnProperty(key) && key !== 'product_id') {
-        setClauses.push(`${key} = $${valueIndex}`);
-        values.push(updates[key]);
-        valueIndex++;
-      }
-    }
-
-    if (setClauses.length === 0) {
-      return res.status(200).json(product.rows[0]);
-    }
-
-    const updateQuery = `
-      UPDATE product
-      SET ${setClauses.join(', ')}, currentstamp = CURRENT_TIMESTAMP
-      WHERE product_id = $${valueIndex}
-      RETURNING *
-    `;
-    values.push(id);
-
-    const result = await pool.query(updateQuery, values);
-
-    if (result.rows.length > 0) {
-      res.status(200).json(result.rows[0]);
-    } else {
-      res.status(404).json({ message: 'Product not found' });
-    }
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error updating product', error: err.message });
-  }
-});
-
-// Delete product by ID
-app.delete('/product/:id', async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const result = await pool.query('DELETE FROM product WHERE product_id = $1 RETURNING *', [id]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'Product not found' });
-    }
-
-    res.status(200).json({ message: 'Product deleted successfully' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error deleting product', error: err.message });
+  } finally {
+    if (client) client.release();
   }
 });
 
@@ -400,7 +289,14 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: 'Internal server error', error: err.message });
 });
 
-// === ✅ Start Server ===
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({ message: 'Route not found' });
+});
+
+// Start server
 app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);
+  console.log(`Health check available at http://localhost:${port}/health`);
+  console.log(`API documentation at http://localhost:${port}/`);
 });
