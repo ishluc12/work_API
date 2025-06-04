@@ -11,119 +11,52 @@ const port = process.env.PORT || 3000;
 // Import database utilities
 const { pool, getConnection, isInitialized } = require('./db.js');
 
-// Enhanced CORS configuration
+// Streamlined CORS configuration
 const corsOptions = {
-  origin: function (origin, callback) {
-    console.log('CORS Origin:', origin); // Debug logging
+  origin: (origin, callback) => {
+    console.log('CORS Origin:', origin);
 
-    // Allow requests with no origin (like mobile apps, Postman, curl requests)
-    if (!origin) {
-      console.log('No origin - allowing request');
-      return callback(null, true);
-    }
+    // Allow requests with no origin
+    if (!origin) return callback(null, true);
 
-    // Development environment - allow all localhost and 127.0.0.1 origins
+    // Development: Allow all localhost/127.0.0.1 origins
     if (process.env.NODE_ENV !== 'production') {
       if (origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/)) {
-        console.log('Development localhost origin allowed:', origin);
         return callback(null, true);
       }
     }
 
-    // Production allowed origins
+    // Production origins
     const productionOrigins = [
       'https://your-frontend-domain.com',
-      'https://your-flutter-web-domain.com',
-      'https://work-api-hkoq.onrender.com' // Add your deployed frontend URL here
+      'https://your-flutter-web-domain.com'
     ];
 
-    // Development allowed origins (specific ports if needed)
-    const developmentOrigins = [
-      'http://localhost:3000',
-      'http://localhost:5173',
-      'http://localhost:7293',
-      'http://localhost:8080',
-      'http://localhost:9111', // Flutter web default
-      'http://127.0.0.1:3000',
-      'http://127.0.0.1:5173',
-      'http://127.0.0.1:7293',
-      'http://127.0.0.1:8080',
-      'http://127.0.0.1:9111'
-    ];
-
-    const allowedOrigins = process.env.NODE_ENV === 'production'
-      ? productionOrigins
-      : [...productionOrigins, ...developmentOrigins];
-
-    if (allowedOrigins.includes(origin)) {
-      console.log('Origin allowed:', origin);
-      callback(null, true);
+    if (process.env.NODE_ENV === 'production') {
+      callback(null, productionOrigins.includes(origin));
     } else {
-      console.log('Origin blocked:', origin);
-      // In development, be more permissive
-      if (process.env.NODE_ENV !== 'production') {
-        console.log('Development mode - allowing origin anyway');
-        callback(null, true);
-      } else {
-        callback(new Error(`Origin ${origin} not allowed by CORS policy`));
-      }
+      // Development: Allow all origins
+      callback(null, true);
     }
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
-  allowedHeaders: [
-    'Origin',
-    'X-Requested-With',
-    'Content-Type',
-    'Accept',
-    'Authorization',
-    'Cache-Control',
-    'Pragma'
-  ],
-  exposedHeaders: ['Authorization'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
   credentials: true,
-  optionsSuccessStatus: 200, // Some legacy browsers (IE11, various SmartTVs) choke on 204
-  maxAge: 86400 // 24 hours
+  optionsSuccessStatus: 200
 };
 
-// Apply CORS middleware
+// Apply middleware
 app.use(cors(corsOptions));
-
-// Handle preflight requests explicitly
-app.options('*', cors(corsOptions));
-
-// Additional CORS headers middleware (fallback)
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-
-  // Set CORS headers manually as fallback
-  if (origin) {
-    res.header('Access-Control-Allow-Origin', origin);
-  }
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,PATCH,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control, Pragma');
-  res.header('Access-Control-Max-Age', '86400');
-
-  // Handle preflight
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
-  }
-
-  next();
-});
-
-// Body parser middleware
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
-// Request logging middleware
+// Request logging
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path} - Origin: ${req.headers.origin || 'No Origin'}`);
   next();
 });
 
-// Database availability middleware
+// Database availability check
 const checkDatabaseAvailability = (req, res, next) => {
   if (!isInitialized()) {
     return res.status(503).json({
@@ -167,22 +100,9 @@ function authenticateToken(req, res, next) {
   }
 }
 
-// Error handling middleware for CORS
-app.use((err, req, res, next) => {
-  if (err.message && err.message.includes('CORS')) {
-    console.error('CORS Error:', err.message);
-    return res.status(403).json({
-      message: 'CORS policy violation',
-      error: err.message,
-      origin: req.headers.origin
-    });
-  }
-  next(err);
-});
-
 // Routes
 
-// Database health check route
+// Health check
 app.get('/health', async (req, res) => {
   try {
     const client = await getConnection();
@@ -195,7 +115,6 @@ app.get('/health', async (req, res) => {
       timestamp: new Date().toISOString(),
       server_time: result.rows[0].current_time,
       database_version: result.rows[0].pg_version.split(' ')[0] + ' ' + result.rows[0].pg_version.split(' ')[1],
-      cors: 'enabled',
       environment: process.env.NODE_ENV || 'development'
     });
   } catch (err) {
@@ -209,29 +128,30 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Welcome route
+// Welcome
 app.get('/', (req, res) => {
   res.json({
     message: 'Welcome to the API. Please register or log in to continue.',
     version: '1.0.0',
     environment: process.env.NODE_ENV || 'development',
-    cors: 'enabled',
     endpoints: {
       health: 'GET /health',
       signup: 'POST /signup',
       login: 'POST /login',
-      users: 'GET /users (requires auth)',
-      user: 'GET /user/:id (requires auth)',
-      products: 'GET /products (requires auth)',
-      product: 'GET /product/:id (requires auth)',
-      createProducts: 'POST /products (requires auth)'
+      users: 'GET /users (auth required)',
+      user: 'GET /user/:id (auth required)',
+      products: 'GET /products (auth required)',
+      product: 'GET /product/:id (auth required)',
+      createProducts: 'POST /products (auth required)',
+      updateProduct: 'PUT /product/:id (auth required)',
+      deleteProduct: 'DELETE /product/:id (auth required)'
     }
   });
 });
 
-// Public: Signup
+// Signup
 app.post('/signup', checkDatabaseAvailability, async (req, res) => {
-  console.log('Signup request received:', { username: req.body.username });
+  console.log('Signup request:', { username: req.body.username, origin: req.headers.origin });
 
   const { username, password, email } = req.body;
 
@@ -294,9 +214,9 @@ app.post('/signup', checkDatabaseAvailability, async (req, res) => {
   }
 });
 
-// Public: Login
+// Login
 app.post('/login', checkDatabaseAvailability, async (req, res) => {
-  console.log('Login request received:', { username: req.body.username });
+  console.log('Login request:', { username: req.body.username, origin: req.headers.origin });
 
   const { username, password } = req.body;
 
@@ -329,7 +249,6 @@ app.post('/login', checkDatabaseAvailability, async (req, res) => {
     }
 
     const token = generateToken(user);
-
     console.log('User logged in successfully:', user.username);
 
     res.json({
@@ -353,15 +272,13 @@ app.post('/login', checkDatabaseAvailability, async (req, res) => {
   }
 });
 
-// Protected routes
-
 // Get all users
 app.get('/users', authenticateToken, checkDatabaseAvailability, async (req, res) => {
   let client;
   try {
     client = await getConnection();
     const result = await client.query('SELECT id, username, email, created_at FROM users ORDER BY created_at DESC');
-    res.status(200).json(result.rows);
+    res.json(result.rows);
   } catch (err) {
     console.error('Get users error:', err);
     res.status(500).json({
@@ -388,7 +305,7 @@ app.get('/user/:id', authenticateToken, checkDatabaseAvailability, async (req, r
       });
     }
 
-    res.status(200).json(result.rows[0]);
+    res.json(result.rows[0]);
   } catch (err) {
     console.error('Get user error:', err);
     res.status(500).json({
@@ -406,7 +323,7 @@ app.get('/products', authenticateToken, checkDatabaseAvailability, async (req, r
   try {
     client = await getConnection();
     const result = await client.query('SELECT * FROM product ORDER BY currentstamp DESC');
-    res.status(200).json(result.rows);
+    res.json(result.rows);
   } catch (err) {
     console.error('Get products error:', err);
     res.status(500).json({
@@ -433,7 +350,7 @@ app.get('/product/:id', authenticateToken, checkDatabaseAvailability, async (req
       });
     }
 
-    res.status(200).json(result.rows[0]);
+    res.json(result.rows[0]);
   } catch (err) {
     console.error('Get product error:', err);
     res.status(500).json({
@@ -444,7 +361,8 @@ app.get('/product/:id', authenticateToken, checkDatabaseAvailability, async (req
     if (client) client.release();
   }
 });
-// Create new products
+
+// Create products
 app.post('/products', authenticateToken, checkDatabaseAvailability, async (req, res) => {
   const productsToCreate = req.body;
 
@@ -498,7 +416,7 @@ app.post('/products', authenticateToken, checkDatabaseAvailability, async (req, 
   }
 });
 
-// Update product by ID
+// Update product
 app.put('/product/:id', authenticateToken, checkDatabaseAvailability, async (req, res) => {
   const { id } = req.params;
   const { product_name, description, quantity, price } = req.body;
@@ -507,7 +425,6 @@ app.put('/product/:id', authenticateToken, checkDatabaseAvailability, async (req
   try {
     client = await getConnection();
 
-    // Check if product exists
     const checkResult = await client.query('SELECT * FROM product WHERE product_id = $1', [id]);
     if (checkResult.rows.length === 0) {
       return res.status(404).json({
@@ -523,7 +440,7 @@ app.put('/product/:id', authenticateToken, checkDatabaseAvailability, async (req
 
     console.log(`Product ${id} updated successfully`);
 
-    res.status(200).json({
+    res.json({
       message: 'Product updated successfully',
       success: true,
       data: result.rows[0]
@@ -539,7 +456,7 @@ app.put('/product/:id', authenticateToken, checkDatabaseAvailability, async (req
   }
 });
 
-// Delete product by ID
+// Delete product
 app.delete('/product/:id', authenticateToken, checkDatabaseAvailability, async (req, res) => {
   const { id } = req.params;
 
@@ -547,7 +464,6 @@ app.delete('/product/:id', authenticateToken, checkDatabaseAvailability, async (
   try {
     client = await getConnection();
 
-    // Check if product exists
     const checkResult = await client.query('SELECT * FROM product WHERE product_id = $1', [id]);
     if (checkResult.rows.length === 0) {
       return res.status(404).json({
@@ -560,7 +476,7 @@ app.delete('/product/:id', authenticateToken, checkDatabaseAvailability, async (
 
     console.log(`Product ${id} deleted successfully`);
 
-    res.status(200).json({
+    res.json({
       message: 'Product deleted successfully',
       success: true,
       data: result.rows[0]
@@ -576,20 +492,17 @@ app.delete('/product/:id', authenticateToken, checkDatabaseAvailability, async (
   }
 });
 
-// Global error handling middleware
+// Error handling
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
 
-  // CORS errors
   if (err.message && err.message.includes('CORS')) {
     return res.status(403).json({
       message: 'CORS policy violation',
-      error: err.message,
-      origin: req.headers.origin
+      error: err.message
     });
   }
 
-  // JWT errors
   if (err.name === 'JsonWebTokenError') {
     return res.status(401).json({
       message: 'Invalid token',
@@ -604,7 +517,6 @@ app.use((err, req, res, next) => {
     });
   }
 
-  // Database errors
   if (err.code && err.code.startsWith('23')) {
     return res.status(400).json({
       message: 'Database constraint violation',
@@ -612,7 +524,6 @@ app.use((err, req, res, next) => {
     });
   }
 
-  // Generic server error
   res.status(500).json({
     message: 'Internal server error',
     error: 'INTERNAL_SERVER_ERROR',
@@ -624,20 +535,7 @@ app.use((err, req, res, next) => {
 app.use('*', (req, res) => {
   res.status(404).json({
     message: `Route ${req.method} ${req.originalUrl} not found`,
-    error: 'ROUTE_NOT_FOUND',
-    availableEndpoints: {
-      health: 'GET /health',
-      home: 'GET /',
-      signup: 'POST /signup',
-      login: 'POST /login',
-      users: 'GET /users',
-      user: 'GET /user/:id',
-      products: 'GET /products',
-      product: 'GET /product/:id',
-      createProducts: 'POST /products',
-      updateProduct: 'PUT /product/:id',
-      deleteProduct: 'DELETE /product/:id'
-    }
+    error: 'ROUTE_NOT_FOUND'
   });
 });
 
@@ -655,14 +553,12 @@ process.on('SIGINT', () => {
 // Start server
 const server = app.listen(port, () => {
   console.log(`🚀 Server running at http://localhost:${port}`);
-  console.log(`📊 Health check available at http://localhost:${port}/health`);
-  console.log(`📚 API documentation at http://localhost:${port}/`);
+  console.log(`📊 Health check: http://localhost:${port}/health`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔒 CORS: Enabled for development origins`);
+  console.log(`🔒 CORS: Enabled`);
   console.log(`⏰ JWT Expiry: ${process.env.JWT_EXPIRY || '24h'}`);
 });
 
-// Handle server errors
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`❌ Port ${port} is already in use`);
