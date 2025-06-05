@@ -3,75 +3,28 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const cors = require('cors');
-
 const app = express();
 const port = process.env.PORT || 3000;
 
 // Import database utilities
 const { pool, getConnection, isInitialized } = require('./db.js');
 
-// CORS Configuration - Simplified and More Permissive
-const corsOptions = {
-  origin: function (origin, callback) {
-    console.log('CORS Origin:', origin);
+// Manual CORS headers middleware - Allow all origins
+app.use((req, res, next) => {
+  // Allow all origins
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,PATCH,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control, Pragma');
 
-    // Allow requests with no origin (mobile apps, Postman, etc.)
-    if (!origin) {
-      console.log('No origin - allowing request');
-      return callback(null, true);
-    }
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
 
-    // In development, allow all localhost and 127.0.0.1 origins with any port
-    if (process.env.NODE_ENV !== 'production') {
-      if (origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/)) {
-        console.log('Development localhost origin allowed:', origin);
-        return callback(null, true);
-      }
-    }
-
-    // Production allowed origins
-    const allowedOrigins = [
-      'https://your-frontend-domain.com',
-      'https://your-flutter-web-domain.com',
-      'https://work-api-hkoq.onrender.com',
-      // Add your production URLs here
-    ];
-
-    // Check if origin is in allowed list
-    if (allowedOrigins.includes(origin)) {
-      console.log('Origin allowed:', origin);
-      return callback(null, true);
-    }
-
-    // In development, be permissive for localhost variations
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('Development mode - allowing origin:', origin);
-      return callback(null, true);
-    }
-
-    // Reject in production
-    console.log('Origin rejected:', origin);
-    callback(new Error(`Origin ${origin} not allowed by CORS policy`));
-  },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: [
-    'Origin',
-    'X-Requested-With',
-    'Content-Type',
-    'Accept',
-    'Authorization',
-    'Cache-Control',
-    'Pragma'
-  ],
-  exposedHeaders: ['Authorization'],
-  credentials: true,
-  optionsSuccessStatus: 200,
-  maxAge: 86400 // 24 hours
-};
-
-// Apply CORS middleware first
-app.use(cors(corsOptions));
+  next();
+});
 
 // Body parser middleware
 app.use(bodyParser.json({ limit: '10mb' }));
@@ -554,15 +507,6 @@ app.delete('/product/:id', authenticateToken, checkDatabaseAvailability, async (
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
 
-  // CORS errors
-  if (err.message && err.message.includes('CORS')) {
-    return res.status(403).json({
-      message: 'CORS policy violation',
-      error: err.message,
-      origin: req.headers.origin
-    });
-  }
-
   // JWT errors
   if (err.name === 'JsonWebTokenError') {
     return res.status(401).json({
@@ -633,7 +577,7 @@ const server = app.listen(port, () => {
   console.log(`📊 Health check available at http://localhost:${port}/health`);
   console.log(`📚 API documentation at http://localhost:${port}/`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔒 CORS: Enabled for development origins`);
+  console.log(`🔒 CORS: Disabled - All origins allowed`);
   console.log(`⏰ JWT Expiry: ${JWT_EXPIRY}`);
 });
 
