@@ -3,28 +3,28 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const cors = require('cors');
 const app = express();
 const port = process.env.PORT || 3000;
 
 // Import database utilities
 const { pool, getConnection, isInitialized } = require('./db.js');
 
-// Manual CORS headers middleware - Allow all origins
-app.use((req, res, next) => {
-  // Allow all origins
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,PATCH,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Cache-Control, Pragma');
+// CORS Configuration
+const corsOptions = {
+  origin: [
+    'http://localhost:10641', // Your Flutter development origin (if using mobile/desktop emulator)
+    'http://localhost',       // Additional possible origins
+    'http://localhost:7745',  // <--- ADD THIS: Your Flutter web app development origin
+    'https://your-app.com'    // Production origin
+  ],
+  methods: 'GET,PUT,POST,DELETE,PATCH,OPTIONS',
+  allowedHeaders: 'Origin,X-Requested-With,Content-Type,Accept,Authorization',
+  credentials: true,
+  optionsSuccessStatus: 200
+};
 
-  // Handle preflight requests
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
-  }
-
-  next();
-});
+app.use(cors(corsOptions));
 
 // Body parser middleware
 app.use(bodyParser.json({ limit: '10mb' }));
@@ -577,18 +577,8 @@ const server = app.listen(port, () => {
   console.log(`📊 Health check available at http://localhost:${port}/health`);
   console.log(`📚 API documentation at http://localhost:${port}/`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔒 CORS: Disabled - All origins allowed`);
+  console.log(`🔒 CORS: Configured with allowed origins`);
   console.log(`⏰ JWT Expiry: ${JWT_EXPIRY}`);
-});
-
-// Handle server errors
-server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`❌ Port ${port} is already in use`);
-    process.exit(1);
-  } else {
-    console.error('❌ Server error:', err);
-  }
 });
 
 module.exports = app;
