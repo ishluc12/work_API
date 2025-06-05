@@ -15,7 +15,8 @@ const corsOptions = {
   origin: [
     'http://localhost:10641', // Your Flutter development origin (if using mobile/desktop emulator)
     'http://localhost',       // Additional possible origins
-    'http://localhost:7745',  // <--- ADD THIS: Your Flutter web app development origin
+    'http://localhost:7745',  // Previous Flutter web app development origin
+    'http://localhost:9730',  // <--- NEW: Your Flutter web app development origin from screenshot
     'https://your-app.com'    // Production origin
   ],
   methods: 'GET,PUT,POST,DELETE,PATCH,OPTIONS',
@@ -154,7 +155,8 @@ app.get('/', (req, res) => {
 app.post('/signup', checkDatabaseAvailability, async (req, res) => {
   console.log('Signup request received:', { username: req.body.username });
 
-  const { username, password, email } = req.body;
+  // Removed email from destructuring
+  const { username, password } = req.body;
 
   // Input validation
   if (!username || !password) {
@@ -174,9 +176,10 @@ app.post('/signup', checkDatabaseAvailability, async (req, res) => {
   try {
     const hashed = await bcrypt.hash(password, 12);
 
+    // Updated INSERT query to only use username and password
     const result = await executeQuery(
-      'INSERT INTO users (username, password, email) VALUES ($1, $2, $3) RETURNING id, username, email, created_at',
-      [username, hashed, email || null],
+      'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username, created_at',
+      [username, hashed],
       'signup'
     );
 
@@ -192,7 +195,6 @@ app.post('/signup', checkDatabaseAvailability, async (req, res) => {
       user: {
         id: user.id,
         username: user.username,
-        email: user.email,
         created_at: user.created_at
       }
     });
@@ -261,7 +263,7 @@ app.post('/login', checkDatabaseAvailability, async (req, res) => {
       user: {
         id: user.id,
         username: user.username,
-        email: user.email
+        email: user.email // Keep email here for login, as it might be present in existing users
       }
     });
   } catch (err) {
