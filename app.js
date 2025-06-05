@@ -11,32 +11,49 @@ const port = process.env.PORT || 3000;
 // Import database utilities
 const { pool, getConnection, isInitialized } = require('./db.js');
 
+// CORS Configuration - Simplified and More Permissive
 const corsOptions = {
-  origin: (origin, callback) => {
+  origin: function (origin, callback) {
     console.log('CORS Origin:', origin);
 
-    if (!origin) return callback(null, true);
-
-    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
-    const isLocalSubdomain = /^https?:\/\/.*\.localhost(:\d+)?$/i.test(origin);
-
-    const productionOrigins = [
-      'https://your-frontend-domain.com',
-      'https://your-flutter-web-domain.com'
-    ];
-
-    if (process.env.NODE_ENV !== 'production') {
-      if (isLocalhost || isLocalSubdomain) return callback(null, true);
-      return callback(null, true); // Fallback for dev
-    }
-
-    if (productionOrigins.includes(origin)) {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) {
+      console.log('No origin - allowing request');
       return callback(null, true);
     }
 
-    return callback(new Error('Not allowed by CORS'));
+    // In development, allow all localhost and 127.0.0.1 origins with any port
+    if (process.env.NODE_ENV !== 'production') {
+      if (origin.match(/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/)) {
+        console.log('Development localhost origin allowed:', origin);
+        return callback(null, true);
+      }
+    }
+
+    // Production allowed origins
+    const allowedOrigins = [
+      'https://your-frontend-domain.com',
+      'https://your-flutter-web-domain.com',
+      'https://work-api-hkoq.onrender.com',
+      // Add your production URLs here
+    ];
+
+    // Check if origin is in allowed list
+    if (allowedOrigins.includes(origin)) {
+      console.log('Origin allowed:', origin);
+      return callback(null, true);
+    }
+
+    // In development, be permissive for localhost variations
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('Development mode - allowing origin:', origin);
+      return callback(null, true);
+    }
+
+    // Reject in production
+    console.log('Origin rejected:', origin);
+    callback(new Error(`Origin ${origin} not allowed by CORS policy`));
   },
-  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: [
     'Origin',
@@ -47,27 +64,26 @@ const corsOptions = {
     'Cache-Control',
     'Pragma'
   ],
+  exposedHeaders: ['Authorization'],
+  credentials: true,
   optionsSuccessStatus: 200,
-  preflightContinue: false
+  maxAge: 86400 // 24 hours
 };
 
-// Apply CORS middleware FIRST
+// Apply CORS middleware first
 app.use(cors(corsOptions));
 
-// Handle preflight requests explicitly
-app.options('*', cors(corsOptions));
-
-// Apply other middleware
+// Body parser middleware
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
-// Request logging
+// Request logging middleware
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path} - Origin: ${req.headers.origin || 'No Origin'}`);
   next();
 });
 
-// Database availability check
+// Database availability middleware
 const checkDatabaseAvailability = (req, res, next) => {
   if (!isInitialized()) {
     return res.status(503).json({
@@ -79,11 +95,14 @@ const checkDatabaseAvailability = (req, res, next) => {
 };
 
 // JWT utilities
+const JWT_SECRET = process.env.JWT_SECRET || 'default_jwt_secret_change_in_production';
+const JWT_EXPIRY = process.env.JWT_EXPIRY || '24h';
+
 function generateToken(user) {
   return jwt.sign(
     { id: user.id, username: user.username },
-    process.env.JWT_SECRET || 'default_jwt_secret',
-    { expiresIn: process.env.JWT_EXPIRY || '24h' }
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRY }
   );
 }
 
@@ -99,33 +118,48 @@ function authenticateToken(req, res, next) {
   }
 
   try {
-    const user = jwt.verify(token, process.env.JWT_SECRET || 'default_jwt_secret');
+    const user = jwt.verify(token, JWT_SECRET);
     req.user = user;
     next();
   } catch (err) {
     console.error('Token verification failed:', err.message);
+    const errorType = err.name === 'TokenExpiredError' ? 'TOKEN_EXPIRED' : 'INVALID_TOKEN';
     return res.status(403).json({
-      message: 'Invalid or expired token',
-      error: 'INVALID_TOKEN'
+      message: err.name === 'TokenExpiredError' ? 'Token expired' : 'Invalid token',
+      error: errorType
     });
+  }
+}
+
+// Utility function for database operations
+async function executeQuery(queryText, params = [], operation = 'query') {
+  let client;
+  try {
+    client = await getConnection();
+    const result = await client.query(queryText, params);
+    return result;
+  } catch (error) {
+    console.error(`Database ${operation} error:`, error);
+    throw error;
+  } finally {
+    if (client) client.release();
   }
 }
 
 // Routes
 
-// Health check
+// Health check route
 app.get('/health', async (req, res) => {
   try {
-    const client = await getConnection();
-    const result = await client.query('SELECT NOW() as current_time, version() as pg_version');
-    client.release();
+    const result = await executeQuery('SELECT NOW() as current_time, version() as pg_version');
 
     res.json({
       status: 'healthy',
       database: 'connected',
       timestamp: new Date().toISOString(),
       server_time: result.rows[0].current_time,
-      database_version: result.rows[0].pg_version.split(' ')[0] + ' ' + result.rows[0].pg_version.split(' ')[1],
+      database_version: result.rows[0].pg_version.split(' ').slice(0, 2).join(' '),
+      cors: 'enabled',
       environment: process.env.NODE_ENV || 'development'
     });
   } catch (err) {
@@ -139,33 +173,37 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Welcome
+// Welcome route
 app.get('/', (req, res) => {
   res.json({
     message: 'Welcome to the API. Please register or log in to continue.',
     version: '1.0.0',
     environment: process.env.NODE_ENV || 'development',
+    cors: 'enabled',
     endpoints: {
       health: 'GET /health',
       signup: 'POST /signup',
       login: 'POST /login',
-      users: 'GET /users (auth required)',
-      user: 'GET /user/:id (auth required)',
-      products: 'GET /products (auth required)',
-      product: 'GET /product/:id (auth required)',
-      createProducts: 'POST /products (auth required)',
-      updateProduct: 'PUT /product/:id (auth required)',
-      deleteProduct: 'DELETE /product/:id (auth required)'
+      users: 'GET /users (requires auth)',
+      user: 'GET /user/:id (requires auth)',
+      products: 'GET /products (requires auth)',
+      product: 'GET /product/:id (requires auth)',
+      createProducts: 'POST /products (requires auth)',
+      updateProduct: 'PUT /product/:id (requires auth)',
+      deleteProduct: 'DELETE /product/:id (requires auth)'
     }
   });
 });
 
+// Authentication Routes
+
 // Signup
 app.post('/signup', checkDatabaseAvailability, async (req, res) => {
-  console.log('Signup request:', { username: req.body.username, origin: req.headers.origin });
+  console.log('Signup request received:', { username: req.body.username });
 
   const { username, password, email } = req.body;
 
+  // Input validation
   if (!username || !password) {
     return res.status(400).json({
       message: 'Username and password are required',
@@ -180,14 +218,13 @@ app.post('/signup', checkDatabaseAvailability, async (req, res) => {
     });
   }
 
-  let client;
   try {
-    client = await getConnection();
     const hashed = await bcrypt.hash(password, 12);
 
-    const result = await client.query(
+    const result = await executeQuery(
       'INSERT INTO users (username, password, email) VALUES ($1, $2, $3) RETURNING id, username, email, created_at',
-      [username, hashed, email || null]
+      [username, hashed, email || null],
+      'signup'
     );
 
     const user = result.rows[0];
@@ -220,14 +257,12 @@ app.post('/signup', checkDatabaseAvailability, async (req, res) => {
       message: 'Registration failed. Please try again.',
       error: 'SIGNUP_FAILED'
     });
-  } finally {
-    if (client) client.release();
   }
 });
 
 // Login
 app.post('/login', checkDatabaseAvailability, async (req, res) => {
-  console.log('Login request:', { username: req.body.username, origin: req.headers.origin });
+  console.log('Login request received:', { username: req.body.username });
 
   const { username, password } = req.body;
 
@@ -238,10 +273,13 @@ app.post('/login', checkDatabaseAvailability, async (req, res) => {
     });
   }
 
-  let client;
   try {
-    client = await getConnection();
-    const result = await client.query('SELECT * FROM users WHERE username = $1', [username]);
+    const result = await executeQuery(
+      'SELECT * FROM users WHERE username = $1',
+      [username],
+      'login'
+    );
+
     const user = result.rows[0];
 
     if (!user) {
@@ -260,6 +298,7 @@ app.post('/login', checkDatabaseAvailability, async (req, res) => {
     }
 
     const token = generateToken(user);
+
     console.log('User logged in successfully:', user.username);
 
     res.json({
@@ -278,36 +317,39 @@ app.post('/login', checkDatabaseAvailability, async (req, res) => {
       message: 'Login failed. Please try again.',
       error: 'LOGIN_FAILED'
     });
-  } finally {
-    if (client) client.release();
   }
 });
 
+// User Routes
+
 // Get all users
 app.get('/users', authenticateToken, checkDatabaseAvailability, async (req, res) => {
-  let client;
   try {
-    client = await getConnection();
-    const result = await client.query('SELECT id, username, email, created_at FROM users ORDER BY created_at DESC');
-    res.json(result.rows);
+    const result = await executeQuery(
+      'SELECT id, username, email, created_at FROM users ORDER BY created_at DESC',
+      [],
+      'get_users'
+    );
+    res.status(200).json(result.rows);
   } catch (err) {
     console.error('Get users error:', err);
     res.status(500).json({
       message: 'Error fetching users',
       error: 'FETCH_USERS_FAILED'
     });
-  } finally {
-    if (client) client.release();
   }
 });
 
 // Get user by ID
 app.get('/user/:id', authenticateToken, checkDatabaseAvailability, async (req, res) => {
   const { id } = req.params;
-  let client;
+
   try {
-    client = await getConnection();
-    const result = await client.query('SELECT id, username, email, created_at FROM users WHERE id = $1', [id]);
+    const result = await executeQuery(
+      'SELECT id, username, email, created_at FROM users WHERE id = $1',
+      [id],
+      'get_user'
+    );
 
     if (result.rows.length === 0) {
       return res.status(404).json({
@@ -316,43 +358,46 @@ app.get('/user/:id', authenticateToken, checkDatabaseAvailability, async (req, r
       });
     }
 
-    res.json(result.rows[0]);
+    res.status(200).json(result.rows[0]);
   } catch (err) {
     console.error('Get user error:', err);
     res.status(500).json({
       message: 'Error fetching user',
       error: 'FETCH_USER_FAILED'
     });
-  } finally {
-    if (client) client.release();
   }
 });
 
+// Product Routes
+
 // Get all products
 app.get('/products', authenticateToken, checkDatabaseAvailability, async (req, res) => {
-  let client;
   try {
-    client = await getConnection();
-    const result = await client.query('SELECT * FROM product ORDER BY currentstamp DESC');
-    res.json(result.rows);
+    const result = await executeQuery(
+      'SELECT * FROM product ORDER BY currentstamp DESC',
+      [],
+      'get_products'
+    );
+    res.status(200).json(result.rows);
   } catch (err) {
     console.error('Get products error:', err);
     res.status(500).json({
       message: 'Error fetching products',
       error: 'FETCH_PRODUCTS_FAILED'
     });
-  } finally {
-    if (client) client.release();
   }
 });
 
 // Get product by ID
 app.get('/product/:id', authenticateToken, checkDatabaseAvailability, async (req, res) => {
   const { id } = req.params;
-  let client;
+
   try {
-    client = await getConnection();
-    const result = await client.query('SELECT * FROM product WHERE product_id = $1', [id]);
+    const result = await executeQuery(
+      'SELECT * FROM product WHERE product_id = $1',
+      [id],
+      'get_product'
+    );
 
     if (result.rows.length === 0) {
       return res.status(404).json({
@@ -361,19 +406,17 @@ app.get('/product/:id', authenticateToken, checkDatabaseAvailability, async (req
       });
     }
 
-    res.json(result.rows[0]);
+    res.status(200).json(result.rows[0]);
   } catch (err) {
     console.error('Get product error:', err);
     res.status(500).json({
       message: 'Error fetching product',
       error: 'FETCH_PRODUCT_FAILED'
     });
-  } finally {
-    if (client) client.release();
   }
 });
 
-// Create products
+// Create new products
 app.post('/products', authenticateToken, checkDatabaseAvailability, async (req, res) => {
   const productsToCreate = req.body;
 
@@ -427,7 +470,7 @@ app.post('/products', authenticateToken, checkDatabaseAvailability, async (req, 
   }
 });
 
-// Update product
+// Update product by ID
 app.put('/product/:id', authenticateToken, checkDatabaseAvailability, async (req, res) => {
   const { id } = req.params;
   const { product_name, description, quantity, price } = req.body;
@@ -436,6 +479,7 @@ app.put('/product/:id', authenticateToken, checkDatabaseAvailability, async (req
   try {
     client = await getConnection();
 
+    // Check if product exists
     const checkResult = await client.query('SELECT * FROM product WHERE product_id = $1', [id]);
     if (checkResult.rows.length === 0) {
       return res.status(404).json({
@@ -451,7 +495,7 @@ app.put('/product/:id', authenticateToken, checkDatabaseAvailability, async (req
 
     console.log(`Product ${id} updated successfully`);
 
-    res.json({
+    res.status(200).json({
       message: 'Product updated successfully',
       success: true,
       data: result.rows[0]
@@ -467,7 +511,7 @@ app.put('/product/:id', authenticateToken, checkDatabaseAvailability, async (req
   }
 });
 
-// Delete product
+// Delete product by ID
 app.delete('/product/:id', authenticateToken, checkDatabaseAvailability, async (req, res) => {
   const { id } = req.params;
 
@@ -475,6 +519,7 @@ app.delete('/product/:id', authenticateToken, checkDatabaseAvailability, async (
   try {
     client = await getConnection();
 
+    // Check if product exists
     const checkResult = await client.query('SELECT * FROM product WHERE product_id = $1', [id]);
     if (checkResult.rows.length === 0) {
       return res.status(404).json({
@@ -487,7 +532,7 @@ app.delete('/product/:id', authenticateToken, checkDatabaseAvailability, async (
 
     console.log(`Product ${id} deleted successfully`);
 
-    res.json({
+    res.status(200).json({
       message: 'Product deleted successfully',
       success: true,
       data: result.rows[0]
@@ -503,17 +548,22 @@ app.delete('/product/:id', authenticateToken, checkDatabaseAvailability, async (
   }
 });
 
-// Error handling
+// Error Handling Middleware
+
+// Global error handling middleware
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
 
+  // CORS errors
   if (err.message && err.message.includes('CORS')) {
     return res.status(403).json({
       message: 'CORS policy violation',
-      error: err.message
+      error: err.message,
+      origin: req.headers.origin
     });
   }
 
+  // JWT errors
   if (err.name === 'JsonWebTokenError') {
     return res.status(401).json({
       message: 'Invalid token',
@@ -528,6 +578,7 @@ app.use((err, req, res, next) => {
     });
   }
 
+  // Database errors
   if (err.code && err.code.startsWith('23')) {
     return res.status(400).json({
       message: 'Database constraint violation',
@@ -535,6 +586,7 @@ app.use((err, req, res, next) => {
     });
   }
 
+  // Generic server error
   res.status(500).json({
     message: 'Internal server error',
     error: 'INTERNAL_SERVER_ERROR',
@@ -546,30 +598,46 @@ app.use((err, req, res, next) => {
 app.use('*', (req, res) => {
   res.status(404).json({
     message: `Route ${req.method} ${req.originalUrl} not found`,
-    error: 'ROUTE_NOT_FOUND'
+    error: 'ROUTE_NOT_FOUND',
+    availableEndpoints: {
+      health: 'GET /health',
+      home: 'GET /',
+      signup: 'POST /signup',
+      login: 'POST /login',
+      users: 'GET /users',
+      user: 'GET /user/:id',
+      products: 'GET /products',
+      product: 'GET /product/:id',
+      createProducts: 'POST /products',
+      updateProduct: 'PUT /product/:id',
+      deleteProduct: 'DELETE /product/:id'
+    }
   });
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  process.exit(0);
-});
+const gracefulShutdown = (signal) => {
+  console.log(`${signal} received, shutting down gracefully`);
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+};
 
-process.on('SIGINT', () => {
-  console.log('SIGINT received, shutting down gracefully');
-  process.exit(0);
-});
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // Start server
 const server = app.listen(port, () => {
   console.log(`🚀 Server running at http://localhost:${port}`);
-  console.log(`📊 Health check: http://localhost:${port}/health`);
+  console.log(`📊 Health check available at http://localhost:${port}/health`);
+  console.log(`📚 API documentation at http://localhost:${port}/`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔒 CORS: Enabled for development origins`);
-  console.log(`⏰ JWT Expiry: ${process.env.JWT_EXPIRY || '24h'}`);
+  console.log(`⏰ JWT Expiry: ${JWT_EXPIRY}`);
 });
 
+// Handle server errors
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`❌ Port ${port} is already in use`);
