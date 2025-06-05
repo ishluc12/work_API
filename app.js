@@ -12,13 +12,22 @@ const { pool, getConnection, isInitialized } = require('./db.js');
 
 // CORS Configuration
 const corsOptions = {
-  origin: [
-    'http://localhost:10641', // Your Flutter development origin (if using mobile/desktop emulator)
-    'http://localhost',       // Additional possible origins
-    'http://localhost:7745',  // Previous Flutter web app development origin
-    'http://localhost:9730',  // <--- NEW: Your Flutter web app development origin from screenshot
-    'https://your-app.com'    // Production origin
-  ],
+  // Updated origin to dynamically allow any localhost port for development
+  origin: (origin, callback) => {
+    // List of allowed origins for production/specific development
+    const allowedOrigins = [
+      'http://localhost:10641', // Flutter mobile/desktop emulator
+      'https://your-app.com'    // Production origin
+    ];
+
+    // Allow requests from any localhost port for development (e.g., http://localhost:3738, http://localhost:8493)
+    // and also explicitly listed allowed origins.
+    if (!origin || /^http:\/\/localhost(:\d+)?$/.test(origin) || allowedOrigins.includes(origin)) {
+      callback(null, true); // Allow the request
+    } else {
+      callback(new Error('Not allowed by CORS')); // Block the request
+    }
+  },
   methods: 'GET,PUT,POST,DELETE,PATCH,OPTIONS',
   allowedHeaders: 'Origin,X-Requested-With,Content-Type,Accept,Authorization',
   credentials: true,
